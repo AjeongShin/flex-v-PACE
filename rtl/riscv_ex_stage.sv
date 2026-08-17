@@ -110,6 +110,10 @@ module riscv_ex_stage
   output logic [C_FFLAG-1:0]             fpu_fflags_o,
   output logic                           fpu_fflags_we_o,
 
+  // PACE signals: mode/config from CSR_PACE, coefficients from the cluster memory
+  input logic [4:0]                      pace_mode_i,
+  input logic [2079:0]                   pace_param_i,
+
   // APU signals
   input logic                            apu_en_i,
   input logic [APU_WOP_CPU-1:0]          apu_op_i,
@@ -554,29 +558,77 @@ module riscv_ex_stage
           // FPU Config
           // -----------
           // Features (enabled formats, vectors etc.)
+          // Sized for the PACE-enabled fpnew: 9 FP formats and 6 operation groups, plus the
+          // MX and PACE fields. The PACE parameters match the Snitch reference configuration.
           localparam fpnew_pkg::fpu_features_t FPU_FEATURES = '{
             Width:         C_FLEN,
             EnableVectors: C_XFVEC,
             EnableNanBox:  1'b0,
-            FpFmtMask:     {C_RVF, C_RVD, C_XF16, C_XF8, C_XF16ALT, C_XF8ALT},
-            IntFmtMask:    {C_XFVEC && (C_XF8 || C_XF8ALT), C_XFVEC && (C_XF16 || C_XF16ALT), 1'b1, 1'b0}
+            FpFmtMask:     {C_RVF, C_RVD, C_XF16, C_XF8, C_XF16ALT, C_XF8ALT, 1'b0, 1'b0, 1'b0},
+            IntFmtMask:    {C_XFVEC && (C_XF8 || C_XF8ALT), C_XFVEC && (C_XF16 || C_XF16ALT), 1'b1, 1'b0},
+            MxFpFmtMask:   '0,  // RI5CY does not support MX formats
+            MxIntFmtMask:  '0,
+            PaceFeatures: '{
+              PaceDegree     : 2,
+              PaceParts      : 16,
+              PaceEps        : 1'b1,
+              PaceDataWidth  : 32,
+              PaceParamWidth : 2080,
+              PaceBstPipeRegs: 4'b0100,
+              FmtConfig      : {C_RVF, C_RVD, C_XF16, C_XF8, C_XF16ALT, C_XF8ALT, 1'b0, 1'b0, 1'b0}
+            }
           };
 
           // Implementation (number of registers etc)
           localparam fpnew_pkg::fpu_implementation_t FPU_IMPLEMENTATION = '{
-            PipeRegs:  '{// FP32, FP64, FP16, FP8, FP16alt
-                         '{C_LAT_FP32, C_LAT_FP64, C_LAT_FP16, C_LAT_FP8, C_LAT_FP16ALT, C_LAT_FP8ALT}, // ADDMUL
+            PipeRegs:  '{// FP32, FP64, FP16, FP8, FP16alt, FP8alt, (3 unused formats)
+                         '{C_LAT_FP32, C_LAT_FP64, C_LAT_FP16, C_LAT_FP8, C_LAT_FP16ALT, C_LAT_FP8ALT, 0, 0, 0}, // ADDMUL
                          '{default: C_LAT_DIVSQRT}, // DIVSQRT
                          '{default: C_LAT_NONCOMP}, // NONCOMP
                          '{default: C_LAT_CONV},   // CONV
-                         '{default: C_LAT_DOTP}}, // SDOTP
+                         '{default: C_LAT_DOTP},  // DOTP
+                         '{default: 0}},         // MXDOTP (not supported)
             UnitTypes: '{'{default: fpnew_pkg::MERGED}, // ADDMUL
                          '{default: C_DIV},               // DIVSQRT
                          '{default: fpnew_pkg::PARALLEL}, // NONCOMP
                          '{default: fpnew_pkg::MERGED},  // CONV
-                         '{default: fpnew_pkg::DISABLED}}, // SDOTP
+                         '{default: fpnew_pkg::DISABLED}, // DOTP
+                         '{default: fpnew_pkg::DISABLED}}, // MXDOTP
             PipeConfig: fpnew_pkg::AFTER
           };
+
+          //---------------
+          // PACE config
+          //---------------
+          // CSR_PACE bit layout (Snitch datagen): [4]=enable, [3]=extend, [2]=rsqrt,
+          // [1]=sqrt, [0]=inv. The degree is the compile-time PaceDegree; the function
+          // is selected through pace_op below.
+          localparam int unsigned PACE_PARAM_WIDTH = FPU_FEATURES.PaceFeatures.PaceParamWidth;
+
+          logic [PACE_PARAM_WIDTH-1:0] pace_param;
+          fpnew_pkg::pace_mode_t       pace_mode;
+          fpnew_pkg::operation_e       pace_op;
+
+          assign pace_param = pace_param_i;
+
+          assign pace_mode = '{
+              extend: pace_mode_i[3],
+              enable: pace_mode_i[4],
+              degree: fpnew_pkg::pace_deg_t'(FPU_FEATURES.PaceFeatures.PaceDegree)
+          };
+
+          // Only the dedicated PACE_S instruction (decoded to PWPA) triggers PACE, so
+          // ordinary FP operations keep their original opcode.
+          always_comb begin
+            if ((fpnew_pkg::operation_e'(fpu_op) == fpnew_pkg::PWPA) && pace_mode_i[4]) begin
+              if      (pace_mode_i[0]) pace_op = fpnew_pkg::PACE_INV;
+              else if (pace_mode_i[1]) pace_op = fpnew_pkg::PACE_SQRT;
+              else if (pace_mode_i[2]) pace_op = fpnew_pkg::PACE_RSQRT;
+              else                     pace_op = fpnew_pkg::PWPA;
+            end else begin
+              pace_op = fpnew_pkg::operation_e'(fpu_op);
+            end
+          end
 
           //---------------
           // FPU instance
@@ -592,7 +644,10 @@ module riscv_ex_stage
             .hart_id_i      ( hart_id_i                             ),
             .operands_i     ( apu_operands_i                        ),
             .rnd_mode_i     ( fpnew_pkg::roundmode_e'(fp_rnd_mode)  ),
-            .op_i           ( fpnew_pkg::operation_e'(fpu_op)       ),
+            .pace_param_i   ( pace_param                            ), // PACE coefficients
+            .pace_mode_i    ( pace_mode                             ), // PACE mode/config
+            .op_i           ( pace_op                               ), // PACE-remapped op
+
             .op_mod_i       ( fpu_op_mod                            ),
             .src_fmt_i      ( fpnew_pkg::fp_format_e'(fpu_src_fmt)  ),
             .dst_fmt_i      ( fpnew_pkg::fp_format_e'(fpu_dst_fmt)  ),

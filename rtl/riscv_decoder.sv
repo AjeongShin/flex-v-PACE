@@ -1520,6 +1520,15 @@ module riscv_decoder
               apu_type_o    = APUTYPE_MULT;
               apu_lat_o     = (PIPE_REG_MULT==1) ? 2'h2 : 2'h1;
             end
+            // PACE_S - PwPA. The PACE function is selected at runtime via CSR_PACE (0xba0),
+            // which the FPU decodes into the actual PACE operation.
+            5'b01100: begin
+              fpu_op        = fpnew_pkg::PWPA;
+              fp_op_group   = ADDMUL;
+              apu_type_o    = APUTYPE_MULT;
+              apu_lat_o     = 2'h3;   // multicycle: wait for the FPU valid handshake
+              check_fprm    = 1'b0;   // PACE ignores the rounding mode field
+            end
             // fdiv.fmt - FP Division
             5'b00011: begin
               if (FP_DIVSQRT) begin

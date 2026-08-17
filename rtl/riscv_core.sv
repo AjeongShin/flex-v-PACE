@@ -96,6 +96,10 @@ module riscv_core
   
   output logic                           data_unaligned_o, 
 
+  // PACE: coefficient bus from the cluster's PACE coefficient memory. The mode/config
+  // comes from CSR_PACE inside the core, so only the coefficients enter from outside.
+  input logic [2079:0]                   pace_param_i,
+
   // apu-interconnect
   // handshake signals
   output logic                           apu_master_req_o,
@@ -268,6 +272,7 @@ module riscv_core
   // FPU
   logic [C_PC-1:0]            fprec_csr;
   logic [C_RM-1:0]            frm_csr;
+  logic [4:0]                 pace_mode_csr;  // PACE: CSR_PACE -> FPU
   logic [C_FFLAG-1:0]         fflags;
   logic [C_FFLAG-1:0]         fflags_csr;
   logic                       fflags_we;
@@ -986,6 +991,9 @@ module riscv_core
     .fpu_fflags_o               ( fflags                       ),
     .fpu_fflags_we_o            ( fflags_we                    ),
 
+    .pace_mode_i                ( pace_mode_csr                ), // PACE: from CSR_PACE
+    .pace_param_i               ( pace_param_i                 ), // PACE: from cluster memory
+
     // APU
     .apu_en_i                   ( apu_en_ex                    ),
     .apu_op_i                   ( apu_op_ex                    ),
@@ -1222,6 +1230,7 @@ module riscv_core
     .macl_w_rstn_o           ( macl_w_rstn        ), //to macload controller
    
     .frm_o                   ( frm_csr            ),
+    .pace_mode_o             ( pace_mode_csr      ), // PACE: CSR_PACE -> EX stage FPU
     .fprec_o                 ( fprec_csr          ),
     .fflags_i                ( fflags_csr         ),
     .fflags_we_i             ( fflags_we          ),

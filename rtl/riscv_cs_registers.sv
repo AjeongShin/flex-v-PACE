@@ -90,6 +90,7 @@ module riscv_cs_registers
   output logic                            macl_w_rstn_o,     //added for status based MACLOAD: signal needed to reset counter when a_address is updated by the C code 
 
   output logic [2:0]                      frm_o,
+  output logic [4:0]                      pace_mode_o, // PACE: CSR_PACE mode/config
   output logic [C_PC-1:0]                 fprec_o,
   input logic [C_FFLAG-1:0]               fflags_i,
   input logic                             fflags_we_i,
@@ -311,6 +312,9 @@ module riscv_cs_registers
   logic [31:0] dscratch1_q, dscratch1_n;
   logic [31:0] mscratch_q, mscratch_n;
 
+  // PACE: mode/config register backing CSR_PACE (0xba0)
+  logic [ 4:0] pace_q, pace_n;
+
   logic [31:0] exception_pc;
   Status_t mstatus_q, mstatus_n;
   logic [ 5:0] mcause_q, mcause_n;
@@ -437,6 +441,8 @@ if(PULP_SECURE==1) begin
       12'h305: csr_rdata_int = {mtvec_q, 6'h0, MTVEC_MODE};
       // mscratch: machine scratch
       12'h340: csr_rdata_int = mscratch_q;
+      // PACE: read mode/config register
+      12'hba0: csr_rdata_int = {27'b0, pace_q};
       // mepc: exception program counter
       12'h341: csr_rdata_int = mepc_q;
       // mcause: exception cause
@@ -571,6 +577,8 @@ end else begin //PULP_SECURE == 0
       12'h305: csr_rdata_int = {mtvec_q, 6'h0, MTVEC_MODE};
       // mscratch: machine scratch
       12'h340: csr_rdata_int = mscratch_q;
+      // PACE: read mode/config register
+      12'hba0: csr_rdata_int = {27'b0, pace_q};
       // mepc: exception program counter
       12'h341: csr_rdata_int = mepc_q;
       // mcause: exception cause
@@ -633,6 +641,7 @@ if(PULP_SECURE==1) begin
     macl_w_skip_n            = macl_w_skip_q;      //added for status based MACLOAD
 
     mscratch_n               = mscratch_q;
+    pace_n                   = pace_q;             // PACE: default hold
     mepc_n                   = mepc_q;
     uepc_n                   = uepc_q;
     depc_n                   = depc_q;
@@ -757,6 +766,10 @@ if(PULP_SECURE==1) begin
       // mscratch: machine scratch
       12'h340: if (csr_we_int) begin
         mscratch_n = csr_wdata_int;
+      end
+      // PACE: write mode/config register (5-bit raw; decoded where PACE is used)
+      12'hba0: if (csr_we_int) begin
+        pace_n = csr_wdata_int[4:0];
       end
       // mepc: exception program counter
       12'h341: if (csr_we_int) begin
@@ -995,6 +1008,7 @@ end else begin //PULP_SECURE == 0
     macl_w_skip_n            = macl_w_skip_q;      //added for status based MACLOAD
 
     mscratch_n               = mscratch_q;
+    pace_n                   = pace_q;             // PACE: default hold
     mepc_n                   = mepc_q;
     depc_n                   = depc_q;
     dcsr_n                   = dcsr_q;
@@ -1112,6 +1126,10 @@ end else begin //PULP_SECURE == 0
       // mscratch: machine scratch
       12'h340: if (csr_we_int) begin
         mscratch_n = csr_wdata_int;
+      end
+      // PACE: write mode/config register (5-bit raw; decoded where PACE is used)
+      12'hba0: if (csr_we_int) begin
+        pace_n = csr_wdata_int[4:0];
       end
       // mepc: exception program counter
       12'h341: if (csr_we_int) begin
@@ -1277,6 +1295,7 @@ end //PULP_SECURE
   assign priv_lvl_o      = priv_lvl_q;
   assign sec_lvl_o       = priv_lvl_q[0];
   assign frm_o           = (FPU == 1) ? frm_q : '0;
+  assign pace_mode_o     = (FPU == 1) ? pace_q : '0;
   assign fprec_o         = (FPU == 1) ? fprec_q : '0;
 
   assign ivec_fmt_o      = ivec_fmt_q;  //added for ivec sb : output directly the format for ivec
@@ -1405,6 +1424,7 @@ end //PULP_SECURE
       dscratch0_q <= '0;
       dscratch1_q <= '0;
       mscratch_q  <= '0;
+      pace_q      <= '0;        // PACE: reset mode/config
       ivec_fmt_q <= VEC_MODE32; //added for ivec sb : reset ivec format value
       ivec_mixed_cycle_q <= '0; //added for ivec sb : reset the cycles counter
       ivec_skip_size_q   <= '0; //added for ivec sb : reset skip size value
@@ -1443,6 +1463,7 @@ end //PULP_SECURE
         dscratch0_q <= '0;
         dscratch1_q <= '0;
         mscratch_q  <= '0;
+        pace_q      <= '0;        // PACE: reset mode/config
         ivec_fmt_q <= VEC_MODE32; //added for ivec sb : reset ivec format value
         ivec_mixed_cycle_q <= '0; //added for ivec sb : reset the cycles counter
         ivec_skip_size_q   <= '0; //added for ivec sb : reset skip size value
@@ -1498,6 +1519,7 @@ end //PULP_SECURE
           dscratch0_q<= dscratch0_n;
           dscratch1_q<= dscratch1_n;
           mscratch_q <= (recover_i) ? recovery_mscratch_i : mscratch_n;
+          pace_q     <= pace_n;  // PACE: update mode/config (not part of HMR recovery)
           ivec_fmt_q <= ivec_fmt_n; //added for ivec sb : updated to the new value
           ivec_mixed_cycle_q <= ivec_mixed_cycle_n; //added for ivec sb : update the new value
           ivec_skip_size_q   <= ivec_skip_size_n;   //Added for ivec sb : update new value
